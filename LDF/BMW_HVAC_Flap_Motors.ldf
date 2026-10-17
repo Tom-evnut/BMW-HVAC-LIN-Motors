@@ -1,0 +1,297 @@
+/*
+ * BMW HVAC LIN flap motors (E90 3 Series, part 41475520; F-series 5 Series use the same commands).
+ *
+ * Worked out from Tom de Bree's reverse engineering (BMW-HVAC-LIN-Motors: "BMW HVAC Lin Flap drives", the Teensy
+ * example and the LIN logs from the car), and measured on the bench with an APGDT001 on 2026-10-16/17 (motors 2, 6,
+ * 7 and 8 loose on the bench; the evidence is in BMW-HVAC-LIN-Motors/findings.md).
+ *
+ * LIN 1.3: classic checksum on every frame, and frame lengths follow the ID (0x00-0x1F 2 bytes, 0x20-0x2F 4 bytes).
+ *
+ * Motors are numbered 1-15. Two ways of reading them:
+ *   - Status frames 0x01-0x0F: motor n answers a header on ID n (what the Teensy example polls). On the E90 bench
+ *     motors 2, 6, 7 and 8 answer; the F-series has 1 and 4-15. Bits 1-14 are the position (bit 0 is always 0) and
+ *     bit 15 is set while the motor is not referenced.
+ *   - Addressed status: the master sends Status_Request (0x1B) with 0x20 | motor, and that motor answers the next
+ *     Addressed_Status header (0x23) once (a second header gets no answer). This is what the car's HVAC controller
+ *     does, moving through the motors. It carries the full 15-bit position and the status flags.
+ * Commands (0x2C, 0x2E, 0x2F) carry the motor address in byte 0 as 0x20 | motor; every motor hears them and only the
+ * one addressed acts. An LDF can't give one frame several publishers or vary a signal per schedule slot, so all the
+ * motors are one slave node here, and the schedules use whatever address the master's signals hold.
+ *
+ * Position: 15 bits, 0x0000-0x7FFF, about 12.8 counts per degree of output shaft (1024 counts ~ 80 degrees). It is
+ * relative, counted by the motor: at power-up every motor reports 0x3FFF (status frame 0xBFFE, 0x23 0xBFFF) and
+ * "not referenced" until a Set_Position tells it where it is. The motors ignore bit 15 of commanded positions, so
+ * the car's 0xB800-0xC7FF are 0x3800-0x47FF, around the middle of the range. Moves stop exactly on target and
+ * reach 0x0000 and 0x7FFF without complaint; there is no wrap (a target below 0x8000 sent to a motor at 0x8040 is
+ * 0x7F40 vs 0x0040: it drives up the long way). Flap end stops are the car's job: it drives 0x58 past a flap's end,
+ * the motor reports Blocked (0x40), and the car sends Lock, Set_Position (that flap's end value) and Unlock.
+ *
+ * LIN timeout fail-safe: about 2.7 s after the last frame on the bus (or at power-up with no master), every motor,
+ * referenced or not, locked or not, drives at normal speed towards one end of its range (motors 2, 6 and 7 to
+ * 0x0000, motor 8 to 0x7FFF) and keeps going when traffic resumes. Set_Position stops it. Any traffic keeps all the
+ * motors awake: polling one motor is enough. The first 0x23 answer after such a timeout has Status_NoTimeout = 0.
+ */
+
+LIN_description_file;
+LIN_protocol_version = "1.3";
+LIN_language_version = "1.3";
+LIN_speed = 9.6 kbps;
+
+Nodes {
+  Master: HVAC_Controller, 10 ms, 0.1 ms;
+  Slaves: Flap_Motors;
+}
+
+Signals {
+  /* status frames, one per motor: position bits 1-14 (bit 0 always 0) and the not-referenced flag in bit 15 */
+  Motor01_Position: 15, 0, Flap_Motors, HVAC_Controller;
+  Motor01_Unreferenced: 1, 0, Flap_Motors, HVAC_Controller;
+  Motor02_Position: 15, 0, Flap_Motors, HVAC_Controller;
+  Motor02_Unreferenced: 1, 0, Flap_Motors, HVAC_Controller;
+  Motor03_Position: 15, 0, Flap_Motors, HVAC_Controller;
+  Motor03_Unreferenced: 1, 0, Flap_Motors, HVAC_Controller;
+  Motor04_Position: 15, 0, Flap_Motors, HVAC_Controller;
+  Motor04_Unreferenced: 1, 0, Flap_Motors, HVAC_Controller;
+  Motor05_Position: 15, 0, Flap_Motors, HVAC_Controller;
+  Motor05_Unreferenced: 1, 0, Flap_Motors, HVAC_Controller;
+  Motor06_Position: 15, 0, Flap_Motors, HVAC_Controller;
+  Motor06_Unreferenced: 1, 0, Flap_Motors, HVAC_Controller;
+  Motor07_Position: 15, 0, Flap_Motors, HVAC_Controller;
+  Motor07_Unreferenced: 1, 0, Flap_Motors, HVAC_Controller;
+  Motor08_Position: 15, 0, Flap_Motors, HVAC_Controller;
+  Motor08_Unreferenced: 1, 0, Flap_Motors, HVAC_Controller;
+  Motor09_Position: 15, 0, Flap_Motors, HVAC_Controller;
+  Motor09_Unreferenced: 1, 0, Flap_Motors, HVAC_Controller;
+  Motor10_Position: 15, 0, Flap_Motors, HVAC_Controller;
+  Motor10_Unreferenced: 1, 0, Flap_Motors, HVAC_Controller;
+  Motor11_Position: 15, 0, Flap_Motors, HVAC_Controller;
+  Motor11_Unreferenced: 1, 0, Flap_Motors, HVAC_Controller;
+  Motor12_Position: 15, 0, Flap_Motors, HVAC_Controller;
+  Motor12_Unreferenced: 1, 0, Flap_Motors, HVAC_Controller;
+  Motor13_Position: 15, 0, Flap_Motors, HVAC_Controller;
+  Motor13_Unreferenced: 1, 0, Flap_Motors, HVAC_Controller;
+  Motor14_Position: 15, 0, Flap_Motors, HVAC_Controller;
+  Motor14_Unreferenced: 1, 0, Flap_Motors, HVAC_Controller;
+  Motor15_Position: 15, 0, Flap_Motors, HVAC_Controller;
+  Motor15_Unreferenced: 1, 0, Flap_Motors, HVAC_Controller;
+
+  /* addressed status (the car's polling) */
+  StatusReq_Address: 8, 33, HVAC_Controller, Flap_Motors;
+  StatusReq_Byte1: 8, 255, HVAC_Controller, Flap_Motors;
+  Status_Address: 8, 0, Flap_Motors, HVAC_Controller;
+  Status_Position: 15, 0, Flap_Motors, HVAC_Controller;
+  Status_NoTimeout: 1, 1, Flap_Motors, HVAC_Controller;
+  Status_Flags: 8, 0, Flap_Motors, HVAC_Controller;
+
+  /* commands; positions are sent as 16 bits like the car does (bit 15 set), the motors ignore bit 15 */
+  SetPos_Address: 8, 33, HVAC_Controller, Flap_Motors;
+  SetPos_Position: 16, 49152, HVAC_Controller, Flap_Motors;
+  SetPos_Byte3: 8, 255, HVAC_Controller, Flap_Motors;
+  Lock_Address: 8, 33, HVAC_Controller, Flap_Motors;
+  Lock_Command: 16, 65532, HVAC_Controller, Flap_Motors;
+  Lock_Byte3: 8, 255, HVAC_Controller, Flap_Motors;
+  Move_Address: 8, 33, HVAC_Controller, Flap_Motors;
+  Move_Position: 16, 49152, HVAC_Controller, Flap_Motors;
+  Move_Speed: 8, 5, HVAC_Controller, Flap_Motors;
+}
+
+Frames {
+  Motor01_Status: 0x01, Flap_Motors, 2 { Motor01_Position, 0; Motor01_Unreferenced, 15; }
+  Motor02_Status: 0x02, Flap_Motors, 2 { Motor02_Position, 0; Motor02_Unreferenced, 15; }
+  Motor03_Status: 0x03, Flap_Motors, 2 { Motor03_Position, 0; Motor03_Unreferenced, 15; }
+  Motor04_Status: 0x04, Flap_Motors, 2 { Motor04_Position, 0; Motor04_Unreferenced, 15; }
+  Motor05_Status: 0x05, Flap_Motors, 2 { Motor05_Position, 0; Motor05_Unreferenced, 15; }
+  Motor06_Status: 0x06, Flap_Motors, 2 { Motor06_Position, 0; Motor06_Unreferenced, 15; }
+  Motor07_Status: 0x07, Flap_Motors, 2 { Motor07_Position, 0; Motor07_Unreferenced, 15; }
+  Motor08_Status: 0x08, Flap_Motors, 2 { Motor08_Position, 0; Motor08_Unreferenced, 15; }
+  Motor09_Status: 0x09, Flap_Motors, 2 { Motor09_Position, 0; Motor09_Unreferenced, 15; }
+  Motor10_Status: 0x0A, Flap_Motors, 2 { Motor10_Position, 0; Motor10_Unreferenced, 15; }
+  Motor11_Status: 0x0B, Flap_Motors, 2 { Motor11_Position, 0; Motor11_Unreferenced, 15; }
+  Motor12_Status: 0x0C, Flap_Motors, 2 { Motor12_Position, 0; Motor12_Unreferenced, 15; }
+  Motor13_Status: 0x0D, Flap_Motors, 2 { Motor13_Position, 0; Motor13_Unreferenced, 15; }
+  Motor14_Status: 0x0E, Flap_Motors, 2 { Motor14_Position, 0; Motor14_Unreferenced, 15; }
+  Motor15_Status: 0x0F, Flap_Motors, 2 { Motor15_Position, 0; Motor15_Unreferenced, 15; }
+
+  /* the master asks one motor for its status; byte 1 is ignored (0x00-0xFF all work; the car sends 0xFF) */
+  Status_Request: 0x1B, HVAC_Controller, 2 {
+    StatusReq_Address, 0;
+    StatusReq_Byte1, 8;
+  }
+  /* the motor asked answers the next 0x23 header, once */
+  Addressed_Status: 0x23, Flap_Motors, 4 {
+    Status_Address, 0;
+    Status_Position, 8;
+    Status_NoTimeout, 23;
+    Status_Flags, 24;
+  }
+  /* the motor takes this as its position without moving: it becomes referenced, a lock (0x02) is cleared and a
+     running move stops; ignored in Standby (0x01). Byte 3 is ignored (the car sends 0xFF) */
+  Set_Position: 0x2C, HVAC_Controller, 4 {
+    SetPos_Address, 0;
+    SetPos_Position, 8;
+    SetPos_Byte3, 24;
+  }
+  /* bits 0-1 of byte 1 set status flag bits 0-1 (0xFFFF: no change); byte 3 is ignored */
+  Lock_Unlock: 0x2E, HVAC_Controller, 4 {
+    Lock_Address, 0;
+    Lock_Command, 8;
+    Lock_Byte3, 24;
+  }
+  /* move to a position at the speed in byte 3; ignored while Locked or in Standby (it needn't be referenced) */
+  Move_To_Position: 0x2F, HVAC_Controller, 4 {
+    Move_Address, 0;
+    Move_Position, 8;
+    Move_Speed, 24;
+  }
+}
+
+Schedule_tables {
+  /* the Teensy example's E90 loop: a 50 ms tick, one frame per tick, each motor read every 200 ms */
+  E90_Status_Poll {
+    Motor02_Status delay 50 ms;
+    Motor06_Status delay 50 ms;
+    Motor07_Status delay 50 ms;
+    Motor08_Status delay 50 ms;
+  }
+  /* the Teensy example's F-series loop (motor 1, then 5, 4, 6-15) */
+  F_Series_Status_Poll {
+    Motor01_Status delay 50 ms;
+    Motor05_Status delay 50 ms;
+    Motor04_Status delay 50 ms;
+    Motor06_Status delay 50 ms;
+    Motor07_Status delay 50 ms;
+    Motor08_Status delay 50 ms;
+    Motor09_Status delay 50 ms;
+    Motor10_Status delay 50 ms;
+    Motor11_Status delay 50 ms;
+    Motor12_Status delay 50 ms;
+    Motor13_Status delay 50 ms;
+    Motor14_Status delay 50 ms;
+    Motor15_Status delay 50 ms;
+  }
+  /* E90 polling with a move command slot, as the Teensy sends a pending command first */
+  E90_Move_And_Poll {
+    Move_To_Position delay 50 ms;
+    Motor02_Status delay 50 ms;
+    Motor06_Status delay 50 ms;
+    Motor07_Status delay 50 ms;
+    Motor08_Status delay 50 ms;
+  }
+  /* tells the motor in SetPos_Address it is at SetPos_Position, which also enables it: run once (Cycles 1) */
+  Set_Position_Once {
+    Set_Position delay 50 ms;
+  }
+  /* the car's way: ask the motor in StatusReq_Address, then read its answer (about 40 ms per frame in the logs) */
+  Addressed_Status_Poll {
+    Status_Request delay 40 ms;
+    Addressed_Status delay 40 ms;
+  }
+}
+
+Signal_encoding_types {
+  Motor_Address {
+    logical_value, 33, "Motor 1";
+    logical_value, 34, "Motor 2";
+    logical_value, 35, "Motor 3";
+    logical_value, 36, "Motor 4";
+    logical_value, 37, "Motor 5";
+    logical_value, 38, "Motor 6";
+    logical_value, 39, "Motor 7";
+    logical_value, 40, "Motor 8";
+    logical_value, 41, "Motor 9";
+    logical_value, 42, "Motor 10";
+    logical_value, 43, "Motor 11";
+    logical_value, 44, "Motor 12";
+    logical_value, 45, "Motor 13";
+    logical_value, 46, "Motor 14";
+    logical_value, 47, "Motor 15";
+    logical_value, 177, "Device 0xB1 (car only, not a flap motor; answers pos 0x7F80, flags 0x04)";
+  }
+  /* 15-bit position as reported */
+  Motor_Position {
+    logical_value, 16382, "Power-up value, not referenced (status frame)";
+    logical_value, 16383, "Power-up value, not referenced";
+    physical_value, 0, 32767, 1, 0, "counts";
+  }
+  /* 16-bit commanded position; bit 15 is ignored, about 12.8 counts per degree */
+  Position_Command {
+    physical_value, 0, 65535, 1, 0, "counts";
+  }
+  Reference_Flag {
+    logical_value, 0, "Referenced";
+    logical_value, 1, "Not referenced (no Set_Position since power-up)";
+  }
+  Timeout_Flag {
+    logical_value, 0, "LIN timeout since the last answer (fail-safe run started)";
+    logical_value, 1, "No LIN timeout";
+  }
+  /* bit 0 Standby (Lock_Unlock 0xFFFD or undervoltage below about 7-8 V: Move and Set_Position ignored),
+     bit 1 Locked (power-up, Lock_Unlock 0xFFFE or undervoltage: Move ignored), bit 2 reset or supply event
+     (power-up, undervoltage; cleared once read), bit 6 Blocked (car logs: stopped short of target), bit 7 not
+     referenced. Bits 3-5 never seen. None of them shows motion. */
+  Status_Flags_Value {
+    logical_value, 0, "Ready";
+    logical_value, 1, "Standby";
+    logical_value, 2, "Locked";
+    logical_value, 4, "Ready, reset/supply event";
+    logical_value, 6, "Locked, reset/supply event";
+    logical_value, 7, "Undervoltage";
+    logical_value, 64, "Blocked";
+    logical_value, 128, "Not referenced";
+    logical_value, 130, "Not referenced, locked";
+    logical_value, 134, "Not referenced, locked, reset/supply event (power-up)";
+    logical_value, 135, "Not referenced, undervoltage";
+    physical_value, 0, 255, 1, 0;
+  }
+  Lock_Command_Value {
+    logical_value, 0, "Unlock (0x0000)";
+    logical_value, 65532, "Unlock";
+    logical_value, 65533, "Standby";
+    logical_value, 65534, "Lock";
+    logical_value, 65535, "No change";
+  }
+  /* measured on the bench: about 240, 320 or 735 counts/s; bit 3 selects fast, else bit 4 or 5 medium, the other
+     bits have no effect seen (the car sends 0x05, 0x0D, 0x00 to device 0xB1, and 0x6F once) */
+  Move_Speed_Value {
+    logical_value, 0, "Normal (240 counts/s)";
+    logical_value, 1, "Normal (240 counts/s)";
+    logical_value, 2, "Normal (240 counts/s)";
+    logical_value, 4, "Normal (240 counts/s)";
+    logical_value, 5, "Normal (240 counts/s, the car's usual)";
+    logical_value, 6, "Normal (240 counts/s)";
+    logical_value, 8, "Fast (735 counts/s)";
+    logical_value, 12, "Fast (730 counts/s)";
+    logical_value, 13, "Fast (735 counts/s, the car's motor 2)";
+    logical_value, 15, "Fast (738 counts/s)";
+    logical_value, 16, "Medium (318 counts/s)";
+    logical_value, 24, "Fast (732 counts/s)";
+    logical_value, 32, "Medium (318 counts/s)";
+    logical_value, 48, "Medium (319 counts/s)";
+    logical_value, 64, "Normal (240 counts/s)";
+    logical_value, 127, "Fast (700 counts/s)";
+    logical_value, 128, "Normal (240 counts/s)";
+    logical_value, 255, "Fast (700 counts/s)";
+    physical_value, 0, 255, 1, 0;
+  }
+  /* bytes the motors ignore (the car sends 0xFF) */
+  Raw_Byte {
+    physical_value, 0, 255, 1, 0;
+  }
+}
+
+Signal_representation {
+  Motor_Address: StatusReq_Address, Status_Address, SetPos_Address, Lock_Address, Move_Address;
+  Motor_Position: Motor01_Position, Motor02_Position, Motor03_Position, Motor04_Position, Motor05_Position,
+    Motor06_Position, Motor07_Position, Motor08_Position, Motor09_Position, Motor10_Position, Motor11_Position,
+    Motor12_Position, Motor13_Position, Motor14_Position, Motor15_Position, Status_Position;
+  Position_Command: SetPos_Position, Move_Position;
+  Reference_Flag: Motor01_Unreferenced, Motor02_Unreferenced, Motor03_Unreferenced, Motor04_Unreferenced,
+    Motor05_Unreferenced, Motor06_Unreferenced, Motor07_Unreferenced, Motor08_Unreferenced, Motor09_Unreferenced,
+    Motor10_Unreferenced, Motor11_Unreferenced, Motor12_Unreferenced, Motor13_Unreferenced, Motor14_Unreferenced,
+    Motor15_Unreferenced;
+  Timeout_Flag: Status_NoTimeout;
+  Status_Flags_Value: Status_Flags;
+  Lock_Command_Value: Lock_Command;
+  Move_Speed_Value: Move_Speed;
+  Raw_Byte: StatusReq_Byte1, SetPos_Byte3, Lock_Byte3;
+}
